@@ -1,0 +1,31 @@
+from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
+
+from app.core.deps import get_current_user
+from app.schemas.auth import AvatarUploadRequest, LoginRequest, ProfileUpdateRequest, RegisterRequest
+from app.services import auth as auth_service
+
+router = APIRouter()
+
+
+@router.post("/register", status_code=201)
+def register(body: RegisterRequest):
+    result = auth_service.register(body.name, body.email, body.password)
+    if not result.get("auto_login"):
+        return JSONResponse(status_code=201, content={"requiresEmailConfirmation": False, "autoLogin": False})
+    return JSONResponse(status_code=201, content={"user": result["user"], "token": result["token"]})
+
+
+@router.post("/login")
+def login(body: LoginRequest):
+    return auth_service.login(body.email, body.password)
+
+
+@router.post("/avatar")
+def upload_avatar(body: AvatarUploadRequest, current_user: dict = Depends(get_current_user)):
+    return auth_service.upload_avatar(current_user["id"], body.imageData)
+
+
+@router.put("/profile")
+def update_profile(body: ProfileUpdateRequest, current_user: dict = Depends(get_current_user)):
+    return auth_service.update_profile(current_user["id"], body.name, body.avatar, body.bio)

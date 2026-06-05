@@ -1,8 +1,10 @@
-import os
+import logging
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.exception_handlers import http_exception_handler
@@ -11,12 +13,30 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
-from routes import auth, courses, posts, tags
+from app.api import api_router
+from app.core.config import get_settings
 
-app = FastAPI(title="Comunyapp API", version="1.0.0")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    settings = get_settings()
+    if settings.is_supabase_configured():
+        logger.info("Supabase configured — URL: %s", settings.supabase_url)
+    else:
+        logger.warning("Supabase NOT configured — endpoints que usen DB fallarán")
+    yield
+
+
+app = FastAPI(title="Comunyapp API", version="1.0.0", lifespan=lifespan)
 
 # Railway usa un proxy que pasa X-Forwarded-Proto: https
-# Sin esto, los redirects de FastAPI generan URLs http:// en vez de https://
 app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
 
 app.add_middleware(
@@ -35,34 +55,25 @@ async def custom_http_exception_handler(request: Request, exc: HTTPException):
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    return JSONResponse(
-        status_code=422,
-        content={"error": str(exc)},
-    )
+    return JSONResponse(status_code=422, content={"error": str(exc)})
 
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    print(f"Unhandled error on {request.method} {request.url}: {exc}")
-    return JSONResponse(
-        status_code=500,
-        content={"error": str(exc) or "Internal server error"},
-    )
+    logger.exception("Unhandled error on %s %s", request.method, request.url)
+    return JSONResponse(status_code=500, content={"error": str(exc) or "Internal server error"})
 
 
-app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
-app.include_router(posts.router, prefix="/api/posts", tags=["posts"])
-app.include_router(courses.router, prefix="/api/courses", tags=["courses"])
-app.include_router(tags.router, prefix="/api/tags", tags=["tags"])
+app.include_router(api_router, prefix="/api")
 
 
 @app.get("/")
 def health():
-    return {"status": "ok"}
+    settings = get_settings()
+    return {"status": "ok", "supabase": settings.is_supabase_configured()}
 
 
 if __name__ == "__main__":
     import uvicorn
-
-    port = int(os.getenv("PORT", 8000))
+    port = get_settings().port
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
