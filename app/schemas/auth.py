@@ -5,6 +5,7 @@ class RegisterRequest(BaseModel):
     name: str = Field(..., min_length=1)
     email: str
     password: str = Field(..., min_length=6, description="Mínimo 6 caracteres")
+    role: str = Field(default="miembro")
 
 
 class LoginRequest(BaseModel):

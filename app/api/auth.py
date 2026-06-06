@@ -10,7 +10,7 @@ router = APIRouter()
 
 @router.post("/register", status_code=201)
 def register(body: RegisterRequest):
-    result = auth_service.register(body.name, body.email, body.password)
+    result = auth_service.register(body.name, body.email, body.password, body.role)
     if not result.get("auto_login"):
         return JSONResponse(status_code=201, content={"requiresEmailConfirmation": False, "autoLogin": False})
     return JSONResponse(status_code=201, content={"user": result["user"], "token": result["token"]})

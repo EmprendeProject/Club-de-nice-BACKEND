@@ -9,7 +9,7 @@ from app.core.supabase import get_supabase
 logger = logging.getLogger(__name__)
 
 
-def register(name: str, email: str, password: str) -> dict:
+def register(name: str, email: str, password: str, role: str = "miembro") -> dict:
     """
     Returns:
         {"auto_login": True,  "user": {...}, "token": "..."}  — cuenta creada y sesión activa
@@ -35,12 +35,7 @@ def register(name: str, email: str, password: str) -> dict:
         msg_lower = msg.lower()
         if "already registered" in msg_lower or "already been registered" in msg_lower:
             raise HTTPException(status_code=400, detail="Este email ya está registrado. Intenta iniciar sesión.")
-        if "user not allowed" in msg_lower:
-            raise HTTPException(
-                status_code=400,
-                detail="El registro está deshabilitado. Activa 'Enable email signup' en Supabase Dashboard → Authentication → Providers → Email.",
-            )
-        raise HTTPException(status_code=400, detail=msg)
+        raise HTTPException(status_code=400, detail=f"Error al crear usuario en Supabase: {msg}")
 
     user_id = auth_resp.user.id
     avatar = f"https://i.pravatar.cc/150?u={user_id}"
@@ -52,7 +47,7 @@ def register(name: str, email: str, password: str) -> dict:
         supabase.table("profiles").insert({
             "id": user_id,
             "name": name,
-            "role": "miembro",
+            "role": role,
             "avatar": avatar,
             "bio": "",
         }).execute()
@@ -78,7 +73,7 @@ def register(name: str, email: str, password: str) -> dict:
     logger.info("[auth.register] step 3/3 OK - user_id=%s", user_id)
     return {
         "auto_login": True,
-        "user": {"id": user_id, "name": name, "email": email, "role": "miembro", "avatar": avatar, "bio": ""},
+        "user": {"id": user_id, "name": name, "email": email, "role": role, "avatar": avatar, "bio": ""},
         "token": token,
     }
 
