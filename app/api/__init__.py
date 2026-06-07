@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from app.api.auth import router as auth_router
 from app.api.courses import router as courses_router
 from app.api.invitations import router as invitations_router
+from app.api.payments import router as payments_router
 from app.api.posts import router as posts_router
 from app.api.tags import router as tags_router
 
@@ -12,3 +13,4 @@ api_router.include_router(posts_router, prefix="/posts", tags=["posts"])
 api_router.include_router(courses_router, prefix="/courses", tags=["courses"])
 api_router.include_router(tags_router, prefix="/tags", tags=["tags"])
 api_router.include_router(invitations_router, prefix="/invitations", tags=["invitations"])
+api_router.include_router(payments_router, prefix="/payments", tags=["payments"])

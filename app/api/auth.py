@@ -21,6 +21,12 @@ def login(body: LoginRequest):
     return auth_service.login(body.email, body.password)
 
 
+@router.get("/me")
+def get_me(current_user: dict = Depends(get_current_user)):
+    """Devuelve el perfil actual (incluye subscription_status) para refrescar el estado de cuenta."""
+    return auth_service.get_me(current_user["id"], current_user["email"])
+
+
 @router.post("/avatar")
 def upload_avatar(body: AvatarUploadRequest, current_user: dict = Depends(get_current_user)):
     return auth_service.upload_avatar(current_user["id"], body.imageData)

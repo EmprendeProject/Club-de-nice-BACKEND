@@ -1,0 +1,408 @@
+import base64
+import logging
+import re
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+
+from fastapi import HTTPException
+
+from app.core.exceptions import supabase_error
+from app.core.supabase import get_supabase
+
+logger = logging.getLogger(__name__)
+
+_PLAN_DAYS = {"1m": 30, "3m": 90, "6m": 180, "1y": 365}
+_RECEIPT_BUCKET = "receipts"
+_SAFE_SEGMENT_RE = re.compile(r"[^a-zA-Z0-9._-]")
+
+
+# ---------------------------------------------------------------------------
+# Helpers privados
+# ---------------------------------------------------------------------------
+
+def _sanitize_path_segment(value: str) -> str:
+    """Evita path traversal en rutas de Storage construidas con input público."""
+    cleaned = _SAFE_SEGMENT_RE.sub("_", value.strip()).strip("._")
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="Valor inválido para construir la ruta del archivo.")
+    return cleaned
+
+
+def _get_user_email(supabase, user_id: str) -> Optional[str]:
+    try:
+        resp = supabase.auth.admin.get_user_by_id(user_id)
+        return resp.user.email if resp.user else None
+    except Exception as exc:
+        logger.warning("[_get_user_email] lookup failed user_id=%s [%s] %s", user_id, type(exc).__name__, supabase_error(exc))
+        return None
+
+
+def _is_admin(supabase, user_id: str) -> bool:
+    try:
+        result = supabase.table("profiles").select("role").eq("id", user_id).single().execute()
+        return bool(result.data) and result.data.get("role") == "admin"
+    except Exception:
+        return False
+
+
+def _get_payment_or_404(supabase, payment_id: str) -> dict:
+    try:
+        result = supabase.table("payments").select("*").eq("id", payment_id).maybe_single().execute()
+    except Exception as exc:
+        msg = supabase_error(exc)
+        logger.error("[payments._get_payment_or_404] FAILED id=%s [%s] %s", payment_id, type(exc).__name__, msg, exc_info=True)
+        raise HTTPException(status_code=500, detail=msg)
+
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Pago no encontrado.")
+    return result.data
+
+
+def _cleanup_failed_registration(supabase, user_id: str) -> None:
+    """Revierte la creación del usuario cuando falla un paso posterior del registro con pago."""
+    try:
+        supabase.table("profiles").delete().eq("id", user_id).execute()
+    except Exception as exc:
+        logger.warning("[payments._cleanup] profile cleanup failed user_id=%s [%s] %s", user_id, type(exc).__name__, supabase_error(exc))
+    try:
+        supabase.auth.admin.delete_user(user_id)
+    except Exception as exc:
+        logger.warning("[payments._cleanup] auth user cleanup failed user_id=%s [%s] %s", user_id, type(exc).__name__, supabase_error(exc))
+
+
+# ---------------------------------------------------------------------------
+# Registro con pago
+# ---------------------------------------------------------------------------
+
+def register_with_payment(
+    name: str, email: str, password: str, plan: str, amount: float,
+    payment_method: str, reference_number: str, phone: str, receipt_path: str,
+) -> dict:
+    """
+    Crea el usuario en Supabase Auth + perfil (role='miembro', subscription_status='inactive')
+    + registro de pago en estado 'pending', a la espera de revisión por un admin.
+
+    Returns:
+        {"user": {...}, "payment": {...}}
+    Raises:
+        HTTPException 400 — email ya registrado u otro error de Supabase Auth
+        HTTPException 500 — fallo creando el perfil o el registro de pago (revierte lo creado)
+    """
+    logger.info("[payments.register] start - email=%s plan=%s", email, plan)
+    supabase = get_supabase()
+
+    # 1. Crear usuario en Supabase Auth
+    try:
+        auth_resp = supabase.auth.admin.create_user({
+            "email": email,
+            "password": password,
+            "email_confirm": True,
+        })
+    except Exception as exc:
+        msg = supabase_error(exc)
+        logger.error("[payments.register] step 1/3 FAILED [%s] %s", type(exc).__name__, msg, exc_info=True)
+        msg_lower = msg.lower()
+        if "already registered" in msg_lower or "already been registered" in msg_lower:
+            raise HTTPException(status_code=400, detail="Este email ya está registrado. Intenta iniciar sesión.")
+        raise HTTPException(status_code=400, detail=f"Error al crear usuario en Supabase: {msg}")
+
+    user_id = auth_resp.user.id
+    avatar = f"https://i.pravatar.cc/150?u={user_id}"
+    logger.info("[payments.register] step 1/3 OK - user_id=%s", user_id)
+
+    # 2. Insertar perfil con acceso inactivo hasta que se apruebe el pago
+    try:
+        supabase.table("profiles").insert({
+            "id": user_id,
+            "name": name,
+            "role": "miembro",
+            "avatar": avatar,
+            "bio": "",
+            "subscription_status": "inactive",
+        }).execute()
+    except Exception as exc:
+        msg = supabase_error(exc)
+        logger.error("[payments.register] step 2/3 FAILED [%s] %s", type(exc).__name__, msg, exc_info=True)
+        _cleanup_failed_registration(supabase, user_id)
+        raise HTTPException(status_code=500, detail=f"Error al crear perfil: {msg}")
+
+    logger.info("[payments.register] step 2/3 OK")
+
+    # 3. Insertar el pago en estado pendiente de revisión
+    try:
+        payment_resp = (
+            supabase.table("payments")
+            .insert({
+                "user_id": user_id,
+                "plan": plan,
+                "amount": amount,
+                "status": "pending",
+                "payment_method": payment_method,
+                "reference_number": reference_number,
+                "receipt_url": receipt_path,
+                "phone": phone,
+            })
+            .execute()
+        )
+    except Exception as exc:
+        msg = supabase_error(exc)
+        logger.error("[payments.register] step 3/3 FAILED [%s] %s", type(exc).__name__, msg, exc_info=True)
+        _cleanup_failed_registration(supabase, user_id)
+        raise HTTPException(status_code=500, detail=f"Error al registrar el pago: {msg}")
+
+    payment = payment_resp.data[0]
+    logger.info("[payments.register] OK - user_id=%s payment_id=%s", user_id, payment["id"])
+
+    return {
+        "user": {
+            "id": user_id, "name": name, "email": email, "role": "miembro",
+            "avatar": avatar, "bio": "", "subscription_status": "inactive",
+        },
+        "payment": payment,
+        "message": "Registro recibido. Tu pago está en revisión, te notificaremos cuando sea aprobado.",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Comprobantes
+# ---------------------------------------------------------------------------
+
+def upload_receipt(reference_number: str, filename: str, file_data: str) -> dict:
+    """
+    Sube el comprobante de pago al bucket `receipts` (público, sin auth) bajo
+    la ruta `{referencia}/{filename}`.
+
+    Returns:
+        {"path": "..."}
+    Raises:
+        HTTPException 400 — formato de archivo inválido o segmentos de ruta vacíos
+        HTTPException 500 — fallo al subir a Supabase Storage
+    """
+    logger.info("[payments.upload_receipt] reference_number=%s filename=%s", reference_number, filename)
+
+    match = re.match(r"^data:(.+);base64,(.+)$", file_data)
+    if not match:
+        raise HTTPException(status_code=400, detail="Formato de archivo inválido")
+
+    mime_type = match.group(1)
+    raw_bytes = base64.b64decode(match.group(2))
+    path = f"{_sanitize_path_segment(reference_number)}/{_sanitize_path_segment(filename)}"
+
+    supabase = get_supabase()
+    try:
+        supabase.storage.from_(_RECEIPT_BUCKET).upload(
+            path, raw_bytes,
+            file_options={"content-type": mime_type, "upsert": "true"},
+        )
+    except Exception as exc:
+        msg = supabase_error(exc)
+        logger.error("[payments.upload_receipt] upload FAILED path=%s [%s] %s", path, type(exc).__name__, msg, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error subiendo el comprobante: {msg}")
+
+    logger.info("[payments.upload_receipt] OK path=%s", path)
+    return {"path": path}
+
+
+def get_receipt_signed_url(payment_id: str) -> dict:
+    """
+    Genera una signed URL temporal (1 hora) para que un admin vea el comprobante.
+
+    Returns:
+        {"url": "...", "expires_in": 3600}
+    Raises:
+        HTTPException 404 — pago no encontrado o sin comprobante adjunto
+        HTTPException 500 — fallo generando la signed URL
+    """
+    logger.info("[payments.get_receipt_signed_url] payment_id=%s", payment_id)
+    supabase = get_supabase()
+    payment = _get_payment_or_404(supabase, payment_id)
+
+    receipt_path = payment.get("receipt_url")
+    if not receipt_path:
+        raise HTTPException(status_code=404, detail="Este pago no tiene comprobante adjunto.")
+
+    try:
+        signed = supabase.storage.from_(_RECEIPT_BUCKET).create_signed_url(receipt_path, 3600)
+    except Exception as exc:
+        msg = supabase_error(exc)
+        logger.error("[payments.get_receipt_signed_url] FAILED path=%s [%s] %s", receipt_path, type(exc).__name__, msg, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"No se pudo generar la URL del comprobante: {msg}")
+
+    url = signed.get("signedURL") or signed.get("signedUrl")
+    if not url:
+        raise HTTPException(status_code=500, detail="No se pudo generar la URL del comprobante.")
+
+    logger.info("[payments.get_receipt_signed_url] OK payment_id=%s", payment_id)
+    return {"url": url, "expires_in": 3600}
+
+
+# ---------------------------------------------------------------------------
+# Listado y consulta
+# ---------------------------------------------------------------------------
+
+def list_payments() -> list:
+    """
+    Admin — lista todos los pagos ordenados por fecha de creación desc, con
+    el nombre y email del usuario asociado.
+
+    Returns:
+        Lista de pagos, cada uno con `user_name` y `user_email` añadidos.
+    Raises:
+        HTTPException 500 — fallo de base de datos
+    """
+    logger.info("[payments.list] fetching all")
+    supabase = get_supabase()
+
+    try:
+        result = (
+            supabase.table("payments")
+            .select("*, profiles(name)")
+            .order("created_at", desc=True)
+            .execute()
+        )
+    except Exception as exc:
+        msg = supabase_error(exc)
+        logger.error("[payments.list] FAILED [%s] %s", type(exc).__name__, msg, exc_info=True)
+        raise HTTPException(status_code=500, detail=msg)
+
+    rows = result.data or []
+    email_cache: dict[str, Optional[str]] = {}
+    for row in rows:
+        profile = row.pop("profiles", None) or {}
+        row["user_name"] = profile.get("name")
+
+        user_id = row.get("user_id")
+        if user_id not in email_cache:
+            email_cache[user_id] = _get_user_email(supabase, user_id)
+        row["user_email"] = email_cache[user_id]
+
+    logger.info("[payments.list] returned %d items", len(rows))
+    return rows
+
+
+def get_user_payments(user_id: str, requester_id: str) -> list:
+    """
+    Devuelve el historial de pagos de `user_id`. Permitido para el propio
+    usuario o para un admin.
+
+    Returns:
+        Lista de pagos del usuario ordenados por fecha de creación desc.
+    Raises:
+        HTTPException 403 — el solicitante no es ni el dueño ni un admin
+        HTTPException 500 — fallo de base de datos
+    """
+    logger.info("[payments.get_user_payments] user_id=%s requester_id=%s", user_id, requester_id)
+    supabase = get_supabase()
+
+    if requester_id != user_id and not _is_admin(supabase, requester_id):
+        raise HTTPException(status_code=403, detail="No tienes permiso para ver estos pagos.")
+
+    try:
+        result = (
+            supabase.table("payments")
+            .select("*")
+            .eq("user_id", user_id)
+            .order("created_at", desc=True)
+            .execute()
+        )
+    except Exception as exc:
+        msg = supabase_error(exc)
+        logger.error("[payments.get_user_payments] FAILED user_id=%s [%s] %s", user_id, type(exc).__name__, msg, exc_info=True)
+        raise HTTPException(status_code=500, detail=msg)
+
+    rows = result.data or []
+    logger.info("[payments.get_user_payments] returned %d items", len(rows))
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Aprobación / rechazo (admin)
+# ---------------------------------------------------------------------------
+
+def _compute_expires_at(plan: str, from_dt: datetime) -> Optional[str]:
+    if plan == "indefinido":
+        return None
+    days = _PLAN_DAYS.get(plan)
+    if days is None:
+        raise HTTPException(status_code=400, detail=f"Plan desconocido: {plan}")
+    return (from_dt + timedelta(days=days)).isoformat()
+
+
+def approve_payment(payment_id: str) -> dict:
+    """
+    Admin aprueba un pago: status -> 'success', paid_at = now(), y calcula
+    expires_at según el plan (None si es indefinido). El trigger de Supabase
+    se encarga de actualizar profiles.subscription_status -> 'active'.
+
+    Returns:
+        El registro de pago actualizado.
+    Raises:
+        HTTPException 404 — pago no encontrado
+        HTTPException 400 — el pago ya fue procesado anteriormente
+        HTTPException 500 — fallo de base de datos
+    """
+    logger.info("[payments.approve] payment_id=%s", payment_id)
+    supabase = get_supabase()
+    payment = _get_payment_or_404(supabase, payment_id)
+
+    if payment["status"] != "pending":
+        raise HTTPException(status_code=400, detail=f"Este pago ya fue procesado (estado actual: {payment['status']}).")
+
+    now = datetime.now(timezone.utc)
+    expires_at = _compute_expires_at(payment["plan"], now)
+
+    try:
+        result = (
+            supabase.table("payments")
+            .update({"status": "success", "paid_at": now.isoformat(), "expires_at": expires_at})
+            .eq("id", payment_id)
+            .execute()
+        )
+    except Exception as exc:
+        msg = supabase_error(exc)
+        logger.error("[payments.approve] update FAILED id=%s [%s] %s", payment_id, type(exc).__name__, msg, exc_info=True)
+        raise HTTPException(status_code=500, detail=msg)
+
+    if not result.data:
+        raise HTTPException(status_code=500, detail="No se pudo actualizar el pago.")
+
+    logger.info("[payments.approve] OK payment_id=%s expires_at=%s", payment_id, expires_at)
+    return result.data[0]
+
+
+def reject_payment(payment_id: str) -> dict:
+    """
+    Admin rechaza un pago: status -> 'failed'. El trigger de Supabase deja
+    profiles.subscription_status como corresponda (no se modifica manualmente).
+
+    Returns:
+        El registro de pago actualizado.
+    Raises:
+        HTTPException 404 — pago no encontrado
+        HTTPException 400 — el pago ya fue procesado anteriormente
+        HTTPException 500 — fallo de base de datos
+    """
+    logger.info("[payments.reject] payment_id=%s", payment_id)
+    supabase = get_supabase()
+    payment = _get_payment_or_404(supabase, payment_id)
+
+    if payment["status"] != "pending":
+        raise HTTPException(status_code=400, detail=f"Este pago ya fue procesado (estado actual: {payment['status']}).")
+
+    try:
+        result = (
+            supabase.table("payments")
+            .update({"status": "failed"})
+            .eq("id", payment_id)
+            .execute()
+        )
+    except Exception as exc:
+        msg = supabase_error(exc)
+        logger.error("[payments.reject] update FAILED id=%s [%s] %s", payment_id, type(exc).__name__, msg, exc_info=True)
+        raise HTTPException(status_code=500, detail=msg)
+
+    if not result.data:
+        raise HTTPException(status_code=500, detail="No se pudo actualizar el pago.")
+
+    logger.info("[payments.reject] OK payment_id=%s", payment_id)
+    return result.data[0]

@@ -68,6 +68,46 @@ async def get_current_admin(current_user: dict = Depends(get_current_user)) -> d
     return current_user
 
 
+async def get_active_user(current_user: dict = Depends(get_current_user)) -> dict:
+    """
+    Como get_current_user pero además exige subscription_status = 'active' en profiles.
+    Los usuarios con role = 'invitado' o 'admin' quedan exentos de esta validación.
+
+    Usar en las rutas que representan "la app" (lo que un usuario sin
+    suscripción activa no debería poder usar) en lugar de get_current_user.
+
+    Raises:
+        HTTPException 403 — perfil no encontrado o suscripción no activa
+    """
+    supabase = get_supabase()
+    try:
+        result = (
+            supabase.table("profiles")
+            .select("role, subscription_status")
+            .eq("id", current_user["id"])
+            .single()
+            .execute()
+        )
+        profile = result.data
+    except Exception as exc:
+        logger.warning(
+            "[deps.get_active_user] profile fetch failed user_id=%s [%s] %s",
+            current_user["id"], type(exc).__name__, str(exc),
+        )
+        raise HTTPException(status_code=403, detail="No se pudo verificar tu suscripción.")
+
+    if not profile:
+        raise HTTPException(status_code=403, detail="No se pudo verificar tu suscripción.")
+
+    if profile.get("role") in ("invitado", "admin"):
+        return current_user
+
+    if profile.get("subscription_status") != "active":
+        raise HTTPException(status_code=403, detail="Tu suscripción no está activa. Actualiza tu plan para continuar.")
+
+    return current_user
+
+
 async def get_optional_user(authorization: Optional[str] = Header(None)) -> Optional[dict]:
     """
     Igual que get_current_user pero devuelve None si no hay token en lugar de lanzar 401.

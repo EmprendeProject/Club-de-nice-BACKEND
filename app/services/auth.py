@@ -118,7 +118,7 @@ def login(email: str, password: str) -> dict:
             "id": user.id, "name": default_name, "role": "miembro",
             "avatar": default_avatar, "bio": "",
         }).execute()
-        profile = {"name": default_name, "role": "miembro", "avatar": default_avatar, "bio": ""}
+        profile = {"name": default_name, "role": "miembro", "avatar": default_avatar, "bio": "", "subscription_status": None}
 
     return {
         "user": {
@@ -128,8 +128,47 @@ def login(email: str, password: str) -> dict:
             "role": profile.get("role"),
             "avatar": profile.get("avatar"),
             "bio": profile.get("bio"),
+            "subscription_status": profile.get("subscription_status"),
         },
         "token": token,
+    }
+
+
+def get_me(user_id: str, email: str) -> dict:
+    """
+    Devuelve el perfil actual del usuario autenticado (incluye subscription_status),
+    útil para refrescar el estado de cuenta sin tener que reloguearse.
+
+    Returns:
+        {"user": {...}}
+    Raises:
+        HTTPException 404 — perfil no encontrado
+        HTTPException 500 — fallo de base de datos
+    """
+    logger.info("[auth.get_me] id=%s", user_id)
+    supabase = get_supabase()
+
+    try:
+        profile_resp = supabase.table("profiles").select("*").eq("id", user_id).maybe_single().execute()
+        profile = profile_resp.data
+    except Exception as exc:
+        msg = supabase_error(exc)
+        logger.error("[auth.get_me] FAILED id=%s [%s] %s", user_id, type(exc).__name__, msg, exc_info=True)
+        raise HTTPException(status_code=500, detail=msg)
+
+    if not profile:
+        raise HTTPException(status_code=404, detail="Perfil no encontrado.")
+
+    return {
+        "user": {
+            "id": user_id,
+            "name": profile.get("name"),
+            "email": email,
+            "role": profile.get("role"),
+            "avatar": profile.get("avatar"),
+            "bio": profile.get("bio"),
+            "subscription_status": profile.get("subscription_status"),
+        }
     }
 
 

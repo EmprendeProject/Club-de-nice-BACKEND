@@ -1,3 +1,5 @@
+from typing import Optional
+
 from pydantic import BaseModel, Field
 
 
@@ -32,6 +34,7 @@ class UserOut(BaseModel):
     role: str
     avatar: str
     bio: str
+    subscription_status: Optional[str] = None
 
 
 class AuthSuccessResponse(BaseModel):
