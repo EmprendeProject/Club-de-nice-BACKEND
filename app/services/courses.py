@@ -219,6 +219,30 @@ def update_course(course_id: str, title: Optional[str], description: Optional[st
     return _map_course(resp.data)
 
 
+def delete_course(course_id: str) -> dict:
+    """
+    Raises:
+        HTTPException 404
+        HTTPException 500
+    """
+    logger.info("[courses.delete_course] course_id=%s", course_id)
+    supabase = get_supabase()
+
+    try:
+        resp = supabase.table("courses").delete().eq("id", course_id).execute()
+        if not resp.data:
+            raise HTTPException(status_code=404, detail="Curso no encontrado")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        msg = supabase_error(exc)
+        logger.error("[courses.delete_course] delete FAILED course_id=%s [%s] %s", course_id, type(exc).__name__, msg, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error al eliminar curso: {msg}")
+
+    logger.info("[courses.delete_course] OK course_id=%s", course_id)
+    return {"success": True}
+
+
 def get_chapters(course_id: str) -> list:
     """
     Raises:
