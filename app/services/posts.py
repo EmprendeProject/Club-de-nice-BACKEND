@@ -131,6 +131,7 @@ def get_posts(limit: int, cursor: Optional[str], user_id: Optional[str], tags: O
 
     if posts:
         post_ids = [p["id"] for p in posts]
+
         try:
             reactions_resp = (
                 supabase.table("post_reactions")
