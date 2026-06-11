@@ -5,6 +5,7 @@ from typing import Optional
 
 from fastapi import HTTPException
 
+from app.core.cache import cache_delete_pattern, cache_get, cache_set
 from app.core.exceptions import supabase_error
 from app.core.supabase import get_supabase
 
@@ -15,6 +16,13 @@ _MAX_HISTORY_LIMIT = 365
 
 _QUERY_MAX_RETRIES = 2
 _QUERY_RETRY_DELAY_SECONDS = 0.5
+
+# TTLs de caché — cortos porque los datos son "en tiempo real"; sirven sobre
+# todo para amortiguar ráfagas de requests paralelos del panel de admin.
+_OVERVIEW_CACHE_TTL = 30
+_MEMBERS_CACHE_TTL = 30
+_REVENUE_CACHE_TTL = 30
+_HISTORY_CACHE_TTL = 300
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +130,13 @@ def get_overview() -> dict:
         HTTPException 500 — fallo de base de datos
     """
     logger.info("[analytics.overview] fetching")
+
+    cache_key = "analytics:overview"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        logger.info("[analytics.overview] cache HIT")
+        return cached
+
     supabase = get_supabase()
 
     members = _select_single_row(supabase, "v_stats_members")
@@ -132,6 +147,7 @@ def get_overview() -> dict:
         "revenue": _revenue_summary(revenue),
     }
 
+    cache_set(cache_key, response, _OVERVIEW_CACHE_TTL)
     logger.info("[analytics.overview] OK")
     return response
 
@@ -152,6 +168,13 @@ def get_members_detail() -> dict:
         HTTPException 500 — fallo de base de datos
     """
     logger.info("[analytics.members] fetching")
+
+    cache_key = "analytics:members"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        logger.info("[analytics.members] cache HIT")
+        return cached
+
     supabase = get_supabase()
 
     members = _select_single_row(supabase, "v_stats_members")
@@ -182,6 +205,7 @@ def get_members_detail() -> dict:
         ],
     }
 
+    cache_set(cache_key, response, _MEMBERS_CACHE_TTL)
     logger.info("[analytics.members] OK")
     return response
 
@@ -196,11 +220,19 @@ def get_revenue_detail() -> dict:
         HTTPException 500 — fallo de base de datos
     """
     logger.info("[analytics.revenue] fetching")
+
+    cache_key = "analytics:revenue"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        logger.info("[analytics.revenue] cache HIT")
+        return cached
+
     supabase = get_supabase()
 
     revenue = _select_single_row(supabase, "v_stats_revenue")
     response = _revenue_summary(revenue)
 
+    cache_set(cache_key, response, _REVENUE_CACHE_TTL)
     logger.info("[analytics.revenue] OK")
     return response
 
@@ -234,6 +266,13 @@ def get_history(from_date: Optional[date], to_date: Optional[date], limit: int) 
         raise HTTPException(status_code=400, detail=f"limit debe estar entre 1 y {_MAX_HISTORY_LIMIT}.")
 
     logger.info("[analytics.history] from=%s to=%s limit=%d", from_date, to_date, limit)
+
+    cache_key = f"analytics:history:{from_date.isoformat()}:{to_date.isoformat()}:{limit}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        logger.info("[analytics.history] cache HIT")
+        return cached
+
     supabase = get_supabase()
 
     try:
@@ -252,6 +291,7 @@ def get_history(from_date: Optional[date], to_date: Optional[date], limit: int) 
         raise HTTPException(status_code=500, detail=msg)
 
     rows = result.data or []
+    cache_set(cache_key, rows, _HISTORY_CACHE_TTL)
     logger.info("[analytics.history] returned %d items", len(rows))
     return rows
 
@@ -284,5 +324,6 @@ def generate_snapshot() -> dict:
     else:
         snapshot = {}
 
+    cache_delete_pattern("analytics:history:*")
     logger.info("[analytics.generate_snapshot] OK")
     return {"success": True, "snapshot": snapshot}

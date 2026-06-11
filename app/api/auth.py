@@ -2,13 +2,14 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
 from app.core.deps import get_current_user
+from app.core.rate_limit import rate_limiter
 from app.schemas.auth import AvatarUploadRequest, LoginRequest, ProfileUpdateRequest, RegisterRequest
 from app.services import auth as auth_service
 
 router = APIRouter()
 
 
-@router.post("/register", status_code=201)
+@router.post("/register", status_code=201, dependencies=[Depends(rate_limiter(5, 600, "register"))])
 def register(body: RegisterRequest):
     result = auth_service.register(body.name, body.email, body.password, body.role)
     if not result.get("auto_login"):
@@ -16,7 +17,7 @@ def register(body: RegisterRequest):
     return JSONResponse(status_code=201, content={"user": result["user"], "token": result["token"]})
 
 
-@router.post("/login")
+@router.post("/login", dependencies=[Depends(rate_limiter(10, 60, "login"))])
 def login(body: LoginRequest):
     return auth_service.login(body.email, body.password)
 

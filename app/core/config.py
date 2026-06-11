@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     supabase_url: str = ""
     supabase_service_role_key: str = ""
     gemini_api_key: str = ""
+    redis_url: str = ""
     port: int = 8000
 
     model_config = SettingsConfigDict(
@@ -15,6 +16,9 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    def is_redis_configured(self) -> bool:
+        return bool(self.redis_url)
 
     def is_supabase_configured(self) -> bool:
         url = self.supabase_url

@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends
 
 from app.core.deps import get_current_admin, get_current_user
+from app.core.rate_limit import rate_limiter
 from app.schemas.payments import RegisterWithPaymentRequest, UploadReceiptRequest
 from app.services import payments as payments_service
 
@@ -13,7 +14,7 @@ def upload_receipt(body: UploadReceiptRequest):
     return payments_service.upload_receipt(body.reference_number, body.filename, body.fileData)
 
 
-@router.post("/register", status_code=201)
+@router.post("/register", status_code=201, dependencies=[Depends(rate_limiter(5, 600, "payments-register"))])
 def register_with_payment(body: RegisterWithPaymentRequest):
     """Público — registra al usuario, crea su perfil inactivo y deja el pago en revisión ('pending')."""
     return payments_service.register_with_payment(

@@ -18,6 +18,7 @@ No test suite exists. Validate logic by running the server and hitting endpoints
 SUPABASE_URL=https://<project>.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=<service_role_key>   # Admin-level access, never expose to clients
 PORT=8000
+REDIS_URL=redis://...                          # Optional — caching + rate limiting (degrades gracefully if unset)
 ```
 
 `app/core/config.py` validates these at startup via `pydantic-settings`. The `get_settings()` function is `@lru_cache`-d — restart the server if you change `.env`.
@@ -32,6 +33,9 @@ app/
   core/
     config.py            # Settings (pydantic-settings, lru_cache singleton)
     supabase.py          # Supabase client singletons
+    redis_client.py      # Redis singleton (returns None if REDIS_URL unset/unreachable)
+    cache.py             # cache_get/cache_set/cache_delete[_pattern] — JSON, no-op without Redis
+    rate_limit.py         # rate_limiter(max, window_s, prefix) FastAPI dependency, fixed-window via Redis
     deps.py              # FastAPI auth dependency functions
     exceptions.py        # supabase_error() helper
   api/                   # Route handlers — thin layer, delegates to services
