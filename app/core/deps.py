@@ -1,11 +1,28 @@
+import hashlib
 import logging
 from typing import Optional
 
 from fastapi import Depends, Header, HTTPException
 
+from app.core.cache import cache_delete, cache_get, cache_set
 from app.core.supabase import get_supabase
 
 logger = logging.getLogger(__name__)
+
+# TTLs cortos para evitar pegarle a Supabase en cada request (ver gotcha #3 de
+# CLAUDE.md: get_user() y la lectura de profiles son llamadas remotas).
+_TOKEN_CACHE_TTL = 60
+_PROFILE_CACHE_TTL = 60
+
+
+def _token_cache_key(token: str) -> str:
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return f"auth:token:{digest}"
+
+
+def invalidate_profile_cache(user_id: str) -> None:
+    """Invalida el caché de role/subscription_status de un usuario (p.ej. tras aprobar un pago)."""
+    cache_delete(f"auth:profile:{user_id}")
 
 
 async def get_current_user(authorization: str = Header(...)) -> dict:
@@ -25,17 +42,50 @@ async def get_current_user(authorization: str = Header(...)) -> dict:
 
     token = authorization.removeprefix("Bearer ")
 
+    cache_key = _token_cache_key(token)
+    cached_user = cache_get(cache_key)
+    if cached_user is not None:
+        return cached_user
+
     try:
         supabase = get_supabase()
         response = supabase.auth.get_user(token)
         if not response.user:
             raise HTTPException(status_code=401, detail="Token inválido o expirado")
-        return {"id": response.user.id, "email": response.user.email}
+        user = {"id": response.user.id, "email": response.user.email}
     except HTTPException:
         raise
     except Exception as exc:
         logger.warning("[deps.get_current_user] token validation FAILED [%s] %s", type(exc).__name__, str(exc))
         raise HTTPException(status_code=401, detail="Token inválido o expirado")
+
+    cache_set(cache_key, user, _TOKEN_CACHE_TTL)
+    return user
+
+
+def _get_cached_profile(supabase, user_id: str) -> Optional[dict]:
+    """Lee {role, subscription_status} de profiles, cacheado en Redis (no-op sin Redis)."""
+    cache_key = f"auth:profile:{user_id}"
+    profile = cache_get(cache_key)
+    if profile is not None:
+        return profile
+
+    try:
+        result = (
+            supabase.table("profiles")
+            .select("role, subscription_status")
+            .eq("id", user_id)
+            .single()
+            .execute()
+        )
+        profile = result.data
+    except Exception as exc:
+        logger.warning("[deps._get_cached_profile] fetch failed user_id=%s [%s] %s", user_id, type(exc).__name__, str(exc))
+        return None
+
+    if profile:
+        cache_set(cache_key, profile, _PROFILE_CACHE_TTL)
+    return profile
 
 
 async def get_current_admin(current_user: dict = Depends(get_current_user)) -> dict:
@@ -46,23 +96,9 @@ async def get_current_admin(current_user: dict = Depends(get_current_user)) -> d
         HTTPException 403 — usuario autenticado pero sin rol admin
     """
     supabase = get_supabase()
-    try:
-        result = (
-            supabase.table("profiles")
-            .select("role")
-            .eq("id", current_user["id"])
-            .single()
-            .execute()
-        )
-        role = result.data.get("role") if result.data else None
-    except Exception as exc:
-        logger.warning(
-            "[deps.get_current_admin] profile fetch failed user_id=%s [%s]",
-            current_user["id"], str(exc),
-        )
-        raise HTTPException(status_code=403, detail="No tienes permisos de administrador.")
+    profile = _get_cached_profile(supabase, current_user["id"])
 
-    if role != "admin":
+    if not profile or profile.get("role") != "admin":
         raise HTTPException(status_code=403, detail="No tienes permisos de administrador.")
 
     return current_user
@@ -80,21 +116,7 @@ async def get_active_user(current_user: dict = Depends(get_current_user)) -> dic
         HTTPException 403 — perfil no encontrado o suscripción no activa
     """
     supabase = get_supabase()
-    try:
-        result = (
-            supabase.table("profiles")
-            .select("role, subscription_status")
-            .eq("id", current_user["id"])
-            .single()
-            .execute()
-        )
-        profile = result.data
-    except Exception as exc:
-        logger.warning(
-            "[deps.get_active_user] profile fetch failed user_id=%s [%s] %s",
-            current_user["id"], type(exc).__name__, str(exc),
-        )
-        raise HTTPException(status_code=403, detail="No se pudo verificar tu suscripción.")
+    profile = _get_cached_profile(supabase, current_user["id"])
 
     if not profile:
         raise HTTPException(status_code=403, detail="No se pudo verificar tu suscripción.")

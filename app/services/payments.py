@@ -6,6 +6,7 @@ from typing import Optional
 
 from fastapi import HTTPException
 
+from app.core.deps import invalidate_profile_cache
 from app.core.exceptions import supabase_error
 from app.core.supabase import get_supabase
 
@@ -366,6 +367,7 @@ def approve_payment(payment_id: str) -> dict:
     if not result.data:
         raise HTTPException(status_code=500, detail="No se pudo actualizar el pago.")
 
+    invalidate_profile_cache(payment["user_id"])
     logger.info("[payments.approve] OK payment_id=%s expires_at=%s", payment_id, expires_at)
     return result.data[0]
 
@@ -404,5 +406,6 @@ def reject_payment(payment_id: str) -> dict:
     if not result.data:
         raise HTTPException(status_code=500, detail="No se pudo actualizar el pago.")
 
+    invalidate_profile_cache(payment["user_id"])
     logger.info("[payments.reject] OK payment_id=%s", payment_id)
     return result.data[0]
