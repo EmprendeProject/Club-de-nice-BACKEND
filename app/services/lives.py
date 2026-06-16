@@ -6,8 +6,12 @@ from typing import Optional
 
 from fastapi import HTTPException
 
+from app.core.cache import cache_delete, cache_get, cache_set
 from app.core.exceptions import supabase_error
 from app.core.supabase import get_supabase
+
+_LIVES_KEY = "lives:all"
+_LIVES_TTL = 5  # segundos — ventana corta para que el inicio/fin de un live sea visible rápido
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +90,10 @@ def _fetch_profile(supabase, user_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def get_lives() -> list:
+    cached = cache_get(_LIVES_KEY)
+    if cached is not None:
+        return cached
+
     logger.info("[lives.get_lives]")
     supabase = get_supabase()
     try:
@@ -100,7 +108,9 @@ def get_lives() -> list:
         msg = supabase_error(exc)
         logger.error("[lives.get_lives] FAILED [%s] %s", type(exc).__name__, msg, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error al obtener transmisiones: {msg}")
-    return [_map_live(l) for l in (resp.data or [])]
+    result = [_map_live(l) for l in (resp.data or [])]
+    cache_set(_LIVES_KEY, result, _LIVES_TTL)
+    return result
 
 
 def get_active_live() -> Optional[dict]:
@@ -272,6 +282,7 @@ def admin_create_live(title: str, youtube_url: Optional[str], description: Optio
         logger.error("[lives.admin_create_live] insert FAILED [%s] %s", type(exc).__name__, msg, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error al crear transmisión: {msg}")
 
+    cache_delete(_LIVES_KEY)
     logger.info("[lives.admin_create_live] OK live_id=%s", live.get("id"))
     return _map_live(live)
 
@@ -303,6 +314,7 @@ def admin_update_live(live_id: str, title: Optional[str], youtube_url: Optional[
     else:
         live = _get_live_or_404(supabase, live_id)
 
+    cache_delete(_LIVES_KEY)
     logger.info("[lives.admin_update_live] OK live_id=%s", live_id)
     return _map_live(live)
 
@@ -333,6 +345,7 @@ def admin_set_active(live_id: str, is_active: bool) -> dict:
         logger.error("[lives.admin_set_active] FAILED live_id=%s [%s] %s", live_id, type(exc).__name__, msg, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error al actualizar transmisión: {msg}")
 
+    cache_delete(_LIVES_KEY)
     logger.info("[lives.admin_set_active] OK live_id=%s", live_id)
     return _map_live(live)
 
