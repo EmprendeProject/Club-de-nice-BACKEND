@@ -22,12 +22,12 @@ class ThumbnailUploadRequest(BaseModel):
 
 
 class CreateChapterRequest(BaseModel):
-    title: str = Field(..., min_length=1)
+    title: str = Field(..., max_length=150)
     videoUrl: Optional[str] = None
-    duration: Optional[str] = None
+    duration: Optional[str] = Field(None, max_length=20)
 
 
 class UpdateChapterRequest(BaseModel):
-    title: Optional[str] = None
+    title: Optional[str] = Field(None, max_length=150)
     videoUrl: Optional[str] = None
-    duration: Optional[str] = None
+    duration: Optional[str] = Field(None, max_length=20)

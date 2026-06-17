@@ -7,6 +7,8 @@ from app.schemas.classroom import (
     PublishCourseRequest,
     UpdateClassroomChapterRequest,
     UpdateClassroomCourseRequest,
+    UploadChapterPdfRequest,
+    UpdateChapterPdfRequest,
 )
 from app.services import classroom as classroom_service
 
@@ -50,3 +52,18 @@ def update_chapter(course_id: str, chapter_id: str, body: UpdateClassroomChapter
 @router.delete("/courses/{course_id}/chapters/{chapter_id}")
 def delete_chapter(course_id: str, chapter_id: str, current_user: dict = Depends(get_current_admin)):
     return classroom_service.admin_delete_chapter(course_id, chapter_id)
+
+
+@router.post("/chapters/{chapter_id}/pdfs", status_code=201)
+def upload_chapter_pdf(chapter_id: str, body: UploadChapterPdfRequest, current_user: dict = Depends(get_current_admin)):
+    return classroom_service.admin_upload_chapter_pdf(chapter_id, body.title, body.fileData, body.fileName)
+
+
+@router.patch("/chapters/{chapter_id}/pdfs/{pdf_id}")
+def update_chapter_pdf(chapter_id: str, pdf_id: str, body: UpdateChapterPdfRequest, current_user: dict = Depends(get_current_admin)):
+    return classroom_service.admin_update_chapter_pdf(chapter_id, pdf_id, body.title, body.sortOrder)
+
+
+@router.delete("/chapters/{chapter_id}/pdfs/{pdf_id}")
+def delete_chapter_pdf(chapter_id: str, pdf_id: str, current_user: dict = Depends(get_current_admin)):
+    return classroom_service.admin_delete_chapter_pdf(chapter_id, pdf_id)

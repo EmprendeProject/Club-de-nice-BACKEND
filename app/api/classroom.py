@@ -24,3 +24,8 @@ def complete_chapter(course_id: str, chapter_id: str, current_user: dict = Depen
 @router.get("/courses/{course_id}/progress")
 def get_course_progress(course_id: str, current_user: dict = Depends(get_active_user)):
     return classroom_service.get_course_progress(course_id, current_user["id"])
+
+
+@router.get("/chapters/{chapter_id}/pdfs")
+def get_chapter_pdfs(chapter_id: str, current_user: dict = Depends(get_active_user)):
+    return classroom_service.get_chapter_pdfs(chapter_id)

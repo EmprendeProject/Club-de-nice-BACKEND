@@ -54,3 +54,16 @@ class UpdateClassroomChapterRequest(BaseModel):
     description: Optional[str] = None
     videoUrl: Optional[str] = None
     duration: Optional[int] = None
+
+
+# ── Admin: chapter pdfs ────────────────────────────────────────────────────────
+
+class UploadChapterPdfRequest(BaseModel):
+    title: str = Field(..., min_length=1)
+    fileData: str
+    fileName: str
+
+
+class UpdateChapterPdfRequest(BaseModel):
+    title: Optional[str] = None
+    sortOrder: Optional[int] = None

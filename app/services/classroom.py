@@ -623,3 +623,158 @@ def admin_delete_chapter(course_id: str, chapter_id: str) -> dict:
 
     logger.info("[classroom.admin_delete_chapter] OK chapter_id=%s", chapter_id)
     return {"deleted": True}
+
+# ---------------------------------------------------------------------------
+# Chapter PDFs
+# ---------------------------------------------------------------------------
+
+def _map_pdf(c: dict) -> dict:
+    return {
+        "id": c.get("id"),
+        "chapterId": c.get("chapter_id"),
+        "title": c.get("title"),
+        "fileUrl": c.get("file_url"),
+        "sortOrder": c.get("sort_order"),
+        "createdAt": c.get("created_at"),
+    }
+
+
+def get_chapter_pdfs(chapter_id: str) -> list:
+    logger.info("[classroom.get_chapter_pdfs] chapter_id=%s", chapter_id)
+    supabase = get_supabase()
+    try:
+        resp = supabase.table("chapter_pdfs").select("*").eq("chapter_id", chapter_id).order("sort_order").execute()
+        return [_map_pdf(p) for p in (resp.data or [])]
+    except Exception as exc:
+        msg = supabase_error(exc)
+        logger.error("[classroom.get_chapter_pdfs] FAILED chapter_id=%s [%s] %s", chapter_id, type(exc).__name__, msg, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error al obtener PDFs: {msg}")
+
+
+def admin_upload_chapter_pdf(chapter_id: str, title: str, file_data: str, filename: str) -> dict:
+    import base64
+    import re
+    import time
+    from app.core.supabase import is_supabase_configured
+
+    logger.info("[classroom.admin_upload_chapter_pdf] chapter_id=%s title=%s filename=%s len=%d", chapter_id, title, filename, len(file_data))
+
+    if not is_supabase_configured():
+        raise HTTPException(status_code=500, detail="Supabase no configurado, no se pueden subir documentos.")
+
+    match = re.match(r"^data:(.+);base64,(.+)$", file_data)
+    if not match:
+        raise HTTPException(status_code=400, detail="Formato de archivo inválido")
+
+    mime_type = match.group(1)
+    raw_bytes = base64.b64decode(match.group(2))
+    supabase = get_supabase()
+
+    ext = "pdf"
+    if "." in filename:
+        ext = filename.split(".")[-1]
+    
+    # Bucket is chapter-pdfs, path is {chapter_id}/{filename} (with timestamp to avoid collision)
+    path = f"{chapter_id}/{int(time.time() * 1000)}_{filename}"
+
+    try:
+        supabase.storage.from_("chapter-pdfs").upload(
+            path, raw_bytes,
+            file_options={"content-type": mime_type, "upsert": "false"},
+        )
+        url = supabase.storage.from_("chapter-pdfs").get_public_url(path)
+    except Exception as exc:
+        msg = supabase_error(exc)
+        logger.error("[classroom.admin_upload_chapter_pdf] upload FAILED [%s] %s", type(exc).__name__, msg, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error al subir documento: {msg}")
+
+    try:
+        existing = supabase.table("chapter_pdfs").select("id").eq("chapter_id", chapter_id).execute()
+        sort_order = len(existing.data) if existing.data else 0
+    except Exception:
+        sort_order = 0
+
+    try:
+        resp = supabase.table("chapter_pdfs").insert({
+            "chapter_id": chapter_id,
+            "title": title,
+            "file_url": url,
+            "sort_order": sort_order,
+        }).execute()
+        pdf_record = resp.data[0]
+    except Exception as exc:
+        msg = supabase_error(exc)
+        logger.error("[classroom.admin_upload_chapter_pdf] insert FAILED [%s] %s", type(exc).__name__, msg, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error al crear registro de PDF: {msg}")
+
+    return _map_pdf(pdf_record)
+
+
+def admin_update_chapter_pdf(chapter_id: str, pdf_id: str, title: Optional[str], sort_order: Optional[int]) -> dict:
+    logger.info("[classroom.admin_update_chapter_pdf] chapter_id=%s pdf_id=%s", chapter_id, pdf_id)
+    supabase = get_supabase()
+
+    updates = {}
+    if title is not None:
+        updates["title"] = title
+    if sort_order is not None:
+        updates["sort_order"] = sort_order
+
+    if updates:
+        try:
+            resp = supabase.table("chapter_pdfs").update(updates).eq("id", pdf_id).eq("chapter_id", chapter_id).execute()
+            if not resp.data:
+                raise HTTPException(status_code=404, detail="PDF no encontrado")
+            return _map_pdf(resp.data[0])
+        except HTTPException:
+            raise
+        except Exception as exc:
+            msg = supabase_error(exc)
+            logger.error("[classroom.admin_update_chapter_pdf] update FAILED [%s] %s", type(exc).__name__, msg, exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Error al actualizar PDF: {msg}")
+    
+    # if no updates
+    try:
+        resp = supabase.table("chapter_pdfs").select("*").eq("id", pdf_id).eq("chapter_id", chapter_id).maybe_single().execute()
+        if not resp.data:
+            raise HTTPException(status_code=404, detail="PDF no encontrado")
+        return _map_pdf(resp.data)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        msg = supabase_error(exc)
+        raise HTTPException(status_code=500, detail=f"Error al obtener PDF: {msg}")
+
+
+def admin_delete_chapter_pdf(chapter_id: str, pdf_id: str) -> dict:
+    logger.info("[classroom.admin_delete_chapter_pdf] chapter_id=%s pdf_id=%s", chapter_id, pdf_id)
+    supabase = get_supabase()
+
+    try:
+        existing = supabase.table("chapter_pdfs").select("*").eq("id", pdf_id).eq("chapter_id", chapter_id).maybe_single().execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="PDF no encontrado")
+        file_url = existing.data.get("file_url")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        msg = supabase_error(exc)
+        logger.error("[classroom.admin_delete_chapter_pdf] lookup FAILED [%s] %s", type(exc).__name__, msg, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error al buscar PDF: {msg}")
+
+    # attempt to delete from bucket if possible
+    try:
+        if file_url and "chapter-pdfs/" in file_url:
+            path = file_url.split("chapter-pdfs/")[-1]
+            supabase.storage.from_("chapter-pdfs").remove([path])
+    except Exception as exc:
+        logger.warning("[classroom.admin_delete_chapter_pdf] bucket remove FAILED [%s]", exc)
+
+    try:
+        supabase.table("chapter_pdfs").delete().eq("id", pdf_id).execute()
+    except Exception as exc:
+        msg = supabase_error(exc)
+        logger.error("[classroom.admin_delete_chapter_pdf] delete FAILED [%s] %s", type(exc).__name__, msg, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error al eliminar PDF: {msg}")
+
+    return {"deleted": True}
