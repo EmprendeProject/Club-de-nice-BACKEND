@@ -20,6 +20,7 @@ def register_with_payment(body: RegisterWithPaymentRequest):
     return payments_service.register_with_payment(
         body.name, body.email, body.password, body.plan, body.amount,
         body.payment_method_id, body.reference_number, body.phone, body.receipt_path,
+        body.currency_id, body.amount_local, body.exchange_rate,
     )
 
 

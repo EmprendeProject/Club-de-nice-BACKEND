@@ -1,6 +1,8 @@
 from fastapi import APIRouter
 
 from app.api.achievements import router as achievements_router
+from app.api.currencies import router as currencies_router
+from app.api.admin_currencies import router as admin_currencies_router
 from app.api.admin_classroom import router as admin_classroom_router
 from app.api.admin_gamification import admin_achievements_router, admin_levels_router
 from app.api.admin_lives import router as admin_lives_router
@@ -35,3 +37,5 @@ api_router.include_router(classroom_router, prefix="/classroom", tags=["classroo
 api_router.include_router(admin_classroom_router, prefix="/admin/classroom", tags=["admin-classroom"])
 api_router.include_router(lives_router, prefix="/lives", tags=["lives"])
 api_router.include_router(admin_lives_router, prefix="/admin/lives", tags=["admin-lives"])
+api_router.include_router(currencies_router, prefix="/currencies", tags=["currencies"])
+api_router.include_router(admin_currencies_router, prefix="/admin/currencies", tags=["admin-currencies"])
