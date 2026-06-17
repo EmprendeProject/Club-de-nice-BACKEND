@@ -78,6 +78,7 @@ def _cleanup_failed_registration(supabase, user_id: str) -> None:
 def register_with_payment(
     name: str, email: str, password: str, plan: str, amount: float,
     payment_method_id: str, reference_number: str, phone: str, receipt_path: str,
+    currency_id: str, amount_local: float, exchange_rate: float,
 ) -> dict:
     """
     Crea el usuario en Supabase Auth + perfil (role='miembro', subscription_status='inactive')
@@ -161,6 +162,9 @@ def register_with_payment(
                 "reference_number": reference_number,
                 "receipt_url": receipt_path,
                 "phone": phone,
+                "currency_id": currency_id,
+                "amount_local": amount_local,
+                "exchange_rate": exchange_rate,
             })
             .execute()
         )
