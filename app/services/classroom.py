@@ -64,7 +64,7 @@ def _get_course_or_404(supabase, course_id: str, require_published: bool = False
         logger.error("[classroom._get_course_or_404] FAILED course_id=%s [%s] %s", course_id, type(exc).__name__, msg, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error al buscar curso: {msg}")
 
-    if not resp.data:
+    if resp is None or not resp.data:
         raise HTTPException(status_code=404, detail="Curso no encontrado")
 
     if require_published and not resp.data.get("is_published"):
@@ -250,7 +250,7 @@ def complete_chapter(course_id: str, chapter_id: str, user_id: str) -> dict:
         logger.error("[classroom.complete_chapter] chapter lookup FAILED course_id=%s chapter_id=%s [%s] %s", course_id, chapter_id, type(exc).__name__, msg, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error al buscar capítulo: {msg}")
 
-    if not chapter_resp.data:
+    if chapter_resp is None or not chapter_resp.data:
         raise HTTPException(status_code=404, detail="Capítulo no encontrado")
 
     try:
@@ -262,7 +262,7 @@ def complete_chapter(course_id: str, chapter_id: str, user_id: str) -> dict:
             .maybe_single()
             .execute()
         )
-        already_completed = bool(existing_resp.data and existing_resp.data.get("completed"))
+        already_completed = bool(existing_resp is not None and existing_resp.data and existing_resp.data.get("completed"))
     except Exception as exc:
         logger.warning("[classroom.complete_chapter] existing progress lookup FAILED [%s] %s", type(exc).__name__, supabase_error(exc))
         already_completed = False
@@ -574,7 +574,7 @@ def admin_update_chapter(course_id: str, chapter_id: str, title: Optional[str], 
             msg = supabase_error(exc)
             logger.error("[classroom.admin_update_chapter] fetch FAILED chapter_id=%s [%s] %s", chapter_id, type(exc).__name__, msg, exc_info=True)
             raise HTTPException(status_code=500, detail=f"Error al obtener capítulo: {msg}")
-        if not resp.data:
+        if resp is None or not resp.data:
             raise HTTPException(status_code=404, detail="Capítulo no encontrado")
         chapter = resp.data
 
@@ -604,7 +604,7 @@ def admin_delete_chapter(course_id: str, chapter_id: str) -> dict:
         logger.error("[classroom.admin_delete_chapter] lookup FAILED chapter_id=%s [%s] %s", chapter_id, type(exc).__name__, msg, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error al buscar capítulo: {msg}")
 
-    if not existing.data:
+    if existing is None or not existing.data:
         raise HTTPException(status_code=404, detail="Capítulo no encontrado")
 
     try:
@@ -734,7 +734,7 @@ def admin_update_chapter_pdf(chapter_id: str, pdf_id: str, title: Optional[str],
     # if no updates
     try:
         resp = supabase.table("chapter_pdfs").select("*").eq("id", pdf_id).eq("chapter_id", chapter_id).maybe_single().execute()
-        if not resp.data:
+        if resp is None or not resp.data:
             raise HTTPException(status_code=404, detail="PDF no encontrado")
         return _map_pdf(resp.data)
     except HTTPException:
@@ -750,7 +750,7 @@ def admin_delete_chapter_pdf(chapter_id: str, pdf_id: str) -> dict:
 
     try:
         existing = supabase.table("chapter_pdfs").select("*").eq("id", pdf_id).eq("chapter_id", chapter_id).maybe_single().execute()
-        if not existing.data:
+        if existing is None or not existing.data:
             raise HTTPException(status_code=404, detail="PDF no encontrado")
         file_url = existing.data.get("file_url")
     except HTTPException:
