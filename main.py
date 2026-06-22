@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Comunyapp API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="El Club de Nice API", version="1.0.0", lifespan=lifespan)
 
 # Railway usa un proxy que pasa X-Forwarded-Proto: https
 app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")

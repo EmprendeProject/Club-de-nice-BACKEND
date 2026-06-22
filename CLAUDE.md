@@ -1,6 +1,6 @@
-# CLAUDE.md — Comunyapp Backend
+# CLAUDE.md — El Club de Nice Backend
 
-FastAPI + Supabase backend for Comunyapp. Handles auth, posts, courses, payments, invitations, and tags.
+FastAPI + Supabase backend for El Club de Nice. Handles auth, posts, courses, payments, invitations, and tags.
 
 ## Commands
 
