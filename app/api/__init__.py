@@ -17,6 +17,7 @@ from app.api.payment_methods import router as payment_methods_router
 from app.api.admin_payment_methods import router as admin_payment_methods_router
 from app.api.payments import router as payments_router
 from app.api.posts import router as posts_router
+from app.api.streaks import router as streaks_router
 from app.api.tags import router as tags_router
 
 api_router = APIRouter()
@@ -39,3 +40,4 @@ api_router.include_router(lives_router, prefix="/lives", tags=["lives"])
 api_router.include_router(admin_lives_router, prefix="/admin/lives", tags=["admin-lives"])
 api_router.include_router(currencies_router, prefix="/currencies", tags=["currencies"])
 api_router.include_router(admin_currencies_router, prefix="/admin/currencies", tags=["admin-currencies"])
+api_router.include_router(streaks_router, prefix="/streaks", tags=["streaks"])

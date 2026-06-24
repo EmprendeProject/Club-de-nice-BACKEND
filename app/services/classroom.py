@@ -332,6 +332,36 @@ def complete_chapter(course_id: str, chapter_id: str, user_id: str) -> dict:
     }
 
 
+def get_completed_courses_count(user_id: str) -> dict:
+    """
+    Cuenta cuántos cursos publicados ha completado el usuario (todos sus capítulos en
+    user_course_progress con completed=True). Cursos sin capítulos no cuentan.
+
+    Returns: { completedCourses }
+    Raises: HTTPException 500
+    """
+    logger.info("[classroom.get_completed_courses_count] user_id=%s", user_id)
+    supabase = get_supabase()
+
+    try:
+        courses_resp = supabase.table("courses").select("id").eq("is_published", True).execute()
+    except Exception as exc:
+        msg = supabase_error(exc)
+        logger.error("[classroom.get_completed_courses_count] courses FAILED [%s] %s", type(exc).__name__, msg, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error al obtener cursos: {msg}")
+
+    course_ids = [c["id"] for c in (courses_resp.data or [])]
+    totals = _chapter_counts(supabase, course_ids)
+    completed = _completed_counts(supabase, user_id, course_ids)
+
+    completed_courses = sum(
+        1 for cid, total in totals.items() if total > 0 and completed.get(cid, 0) >= total
+    )
+
+    logger.info("[classroom.get_completed_courses_count] OK user_id=%s completed=%d", user_id, completed_courses)
+    return {"completedCourses": completed_courses}
+
+
 def get_course_progress(course_id: str, user_id: str) -> dict:
     """
     Returns: { courseId, completedChapters, totalChapters, progress }

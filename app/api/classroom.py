@@ -1,9 +1,14 @@
 from fastapi import APIRouter, Depends
 
-from app.core.deps import get_active_user
+from app.core.deps import get_active_user, get_current_user
 from app.services import classroom as classroom_service
 
 router = APIRouter()
+
+
+@router.get("/me/completed-courses")
+def get_completed_courses_count(current_user: dict = Depends(get_current_user)):
+    return classroom_service.get_completed_courses_count(current_user["id"])
 
 
 @router.get("/courses")

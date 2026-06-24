@@ -505,6 +505,47 @@ def get_comment_reactions(comment_id: str) -> list:
     ]
 
 
+def get_social_impact(user_id: str) -> dict:
+    """
+    Suma de likes (post_reactions) y comentarios (post_comments) recibidos en
+    todas las publicaciones del usuario.
+
+    Returns: { likes, comments, totalImpact }
+    Raises: HTTPException 500
+    """
+    logger.info("[posts.get_social_impact] user_id=%s", user_id)
+    supabase = get_supabase()
+
+    try:
+        posts_resp = supabase.table("posts").select("id").eq("user_id", user_id).execute()
+    except Exception as exc:
+        msg = supabase_error(exc)
+        logger.error("[posts.get_social_impact] posts FAILED user_id=%s [%s] %s", user_id, type(exc).__name__, msg, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error al obtener impacto social: {msg}")
+
+    post_ids = [p["id"] for p in (posts_resp.data or [])]
+    if not post_ids:
+        return {"likes": 0, "comments": 0, "totalImpact": 0}
+
+    try:
+        likes_resp = supabase.table("post_reactions").select("id", count="exact").in_("post_id", post_ids).execute()
+        likes = likes_resp.count or 0
+    except Exception as exc:
+        logger.warning("[posts.get_social_impact] likes count FAILED user_id=%s [%s] %s", user_id, type(exc).__name__, supabase_error(exc))
+        likes = 0
+
+    try:
+        comments_resp = supabase.table("post_comments").select("id", count="exact").in_("post_id", post_ids).execute()
+        comments = comments_resp.count or 0
+    except Exception as exc:
+        logger.warning("[posts.get_social_impact] comments count FAILED user_id=%s [%s] %s", user_id, type(exc).__name__, supabase_error(exc))
+        comments = 0
+
+    total = likes + comments
+    logger.info("[posts.get_social_impact] OK user_id=%s likes=%d comments=%d", user_id, likes, comments)
+    return {"likes": likes, "comments": comments, "totalImpact": total}
+
+
 def get_post_reactions(post_id: str) -> list:
     logger.info("[posts.get_post_reactions] post_id=%s", post_id)
     supabase = get_supabase()

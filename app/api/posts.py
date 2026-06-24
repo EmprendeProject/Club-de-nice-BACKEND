@@ -30,6 +30,11 @@ def create_post(body: CreatePostRequest, current_user: dict = Depends(get_curren
     return posts_service.create_post(body.content, current_user["id"], body.tagIds or [], body.imageData)
 
 
+@router.get("/me/social-impact")
+def get_social_impact(current_user: dict = Depends(get_current_user)):
+    return posts_service.get_social_impact(current_user["id"])
+
+
 @router.delete("/{post_id}")
 def delete_post(post_id: str, current_user: dict = Depends(get_current_user)):
     return posts_service.delete_post(post_id, current_user["id"])
