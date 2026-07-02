@@ -392,7 +392,20 @@ def approve_payment(payment_id: str) -> dict:
 
     invalidate_profile_cache(payment["user_id"])
     logger.info("[payments.approve] OK payment_id=%s expires_at=%s", payment_id, expires_at)
-    return result.data[0]
+
+    approved = result.data[0]
+    # Fire-and-forget: enviar correo de bienvenida / confirmación de pago
+    try:
+        from app.services import email as email_service
+        user_email = _get_user_email(supabase, payment["user_id"])
+        profile_resp = supabase.table("profiles").select("name").eq("id", payment["user_id"]).maybe_single().execute()
+        user_name = (profile_resp.data or {}).get("name") or "miembro"
+        if user_email:
+            email_service.send_payment_approved(user_email, user_name, approved.get("plan", ""), approved.get("expires_at"))
+    except Exception as exc:
+        logger.warning("[payments.approve] welcome email failed: %s", exc)
+
+    return approved
 
 
 def reject_payment(payment_id: str) -> dict:

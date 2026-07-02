@@ -81,6 +81,14 @@ def register(name: str, email: str, password: str, role: str = "miembro") -> dic
         return {"auto_login": False}
 
     logger.info("[auth.register] step 3/3 OK - user_id=%s", user_id)
+
+    # Fire-and-forget: correo de bienvenida
+    try:
+        from app.services import email as email_service
+        email_service.send_welcome(email, name)
+    except Exception as exc:
+        logger.warning("[auth.register] welcome email failed: %s", exc)
+
     return {
         "auto_login": True,
         "user": {"id": user_id, "name": name, "email": email, "role": role, "avatar": avatar, "bio": ""},

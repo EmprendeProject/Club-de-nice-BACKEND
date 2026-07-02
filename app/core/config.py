@@ -11,6 +11,12 @@ class Settings(BaseSettings):
     redis_url: str = ""
     port: int = 8000
 
+    # Email — Resend
+    resend_api_key: str = ""
+    from_email: str = "El Club de Nice <hola@elclubdenice.com>"
+    app_url: str = "https://elclubdenice.com"
+    app_name: str = "El Club de Nice"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -19,6 +25,9 @@ class Settings(BaseSettings):
 
     def is_redis_configured(self) -> bool:
         return bool(self.redis_url)
+
+    def is_email_configured(self) -> bool:
+        return bool(self.resend_api_key)
 
     def is_supabase_configured(self) -> bool:
         url = self.supabase_url

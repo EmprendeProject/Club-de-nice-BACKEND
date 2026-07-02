@@ -20,6 +20,12 @@ SUPABASE_SERVICE_ROLE_KEY=<service_role_key>   # Admin-level access, never expos
 PORT=8000
 REDIS_URL=redis://...                          # Optional — caching + rate limiting (degrades gracefully if unset)
 GEMINI_API_KEY=...                             # Unused leftover, no service references it
+
+# Email — Resend (optional, degrades gracefully if unset)
+RESEND_API_KEY=re_...                          # From resend.com dashboard
+FROM_EMAIL=El Club de Nice <hola@tudominio.com>
+APP_URL=https://tudominio.com                  # Used in email CTAs and password reset redirect
+APP_NAME=El Club de Nice
 ```
 
 `app/core/config.py` validates these at startup via `pydantic-settings`. The `get_settings()` function is `@lru_cache`-d — restart the server if you change `.env`.
@@ -53,8 +59,13 @@ app/
     payment_methods.py, admin_payment_methods.py
     analytics.py           # Admin dashboard stats
     streaks.py             # Daily check-in / streak tracking
+    raffles.py             # Admin sorteos (random winner selection among active members)
+    emails.py              # public_router: forgot-password · admin_router: renewal-reminders cron
   services/               # All business logic lives here (mirrors app/api/ module names)
+    email.py               # Resend integration — all transactional email templates + dispatch_renewal_reminders()
+    raffles.py             # Raffle creation, listing, deletion
   schemas/                # Pydantic request/response models (mirrors app/api/ module names)
+    raffles.py             # CreateRaffleRequest, RaffleOut, WinnerOut
 ```
 
 **Pattern**: route handler validates input (Pydantic), calls service function, returns result. All DB logic in `services/`. Never put DB queries in `api/`.
@@ -70,7 +81,12 @@ app/
 /api/lives  /api/admin/lives
 /api/currencies  /api/admin/currencies
 /api/streaks
+/api/admin/raffles
+/api/auth          (also hosts /forgot-password from email public_router)
+/api/admin/emails
 ```
+
+> `emails.py` exports two routers: `public_router` (mounted at `/api/auth`) and `admin_router` (mounted at `/api/admin/emails`). The cron endpoint `/renewal-reminders/cron` uses `_require_service_role` instead of `get_current_admin` — it validates `Authorization: Bearer <SUPABASE_SERVICE_ROLE_KEY>` which never expires.
 
 Health endpoint: `GET /` → `{status: "ok", supabase: bool, redis: bool}`.
 
@@ -156,6 +172,14 @@ Status computed on read: `"pendiente"` / `"usada"` / `"expirada"`.
 ### `chapter_pdfs`
 `id`, `chapter_id` FK → course_chapters, `title`, `file_url`, `sort_order`, `created_at`. Stored in bucket `chapter-pdfs` at `{chapter_id}/{timestamp}_{safe_filename}`.
 
+### `raffles` / `raffle_winners`
+| Table | Columns |
+|-------|---------|
+| `raffles` | `id`, `title`, `winner_count` (int), `created_by` (FK → profiles, set null on delete), `created_at` |
+| `raffle_winners` | `id`, `raffle_id` (FK → raffles ON DELETE CASCADE), `user_id` (FK → profiles ON DELETE CASCADE), `position` (int), `created_at` |
+
+RLS enabled on both tables. Only active `miembro` profiles (`subscription_status='active'`, `role='miembro'`) are eligible to be selected as winners. Winner selection uses `random.sample()` (no replacement). If winner insert fails after raffle insert, the raffle row is rolled back manually. FK from `raffle_winners.user_id → profiles.id` (not `auth.users`) enables PostgREST nested select.
+
 ### `user_course_progress` (used by the newer `/api/classroom` student endpoints)
 Tracks per-user chapter completion. Backs `complete_chapter` / `get_course_progress` / `get_completed_courses_count`. **Not yet wired into the frontend UI** — `CourseDetail.tsx` only reads the static `courses.progress` column, not this table.
 
@@ -194,6 +218,9 @@ RPC `award_xp(p_user_id, p_amount, p_reason, p_achievement_type_id)` updates `us
 3. If repeatable with `daily_limit`: skip if today's count ≥ limit.
 4. Insert `user_achievements` row, call `award_xp` RPC.
 5. Return `{xp_awarded, new_level, leveled_up, skipped}`.
+
+### `app_secrets` (Supabase internal config — managed via SQL)
+Simple key/value table used by pg_cron functions to read secrets at runtime without hardcoding them in migration history. RLS restricted to service role only. Current keys: `backend_url`, `service_role_key`.
 
 ### Streaks
 Daily check-in tracked via RPC `register_daily_login()`. `GET /api/streaks/checkin` registers today's login and returns streak info (including `milestone_reached` when a streak threshold is hit); `GET /api/streaks/me` reads current streak without registering.
@@ -256,6 +283,45 @@ get_active_user     →  get_current_user + checks subscription_status == "activ
 | View own payments | `get_current_user` | user_id must match or admin |
 
 > **Gap**: Course and tag management routes (and the legacy `/api/courses` chapter CRUD) use `get_current_user` but the admin check only happens in the frontend. Any authenticated user can technically create/edit/delete courses via the API.
+
+---
+
+## Auth & Registration Flows
+
+## Email Service (`app/services/email.py`)
+
+Uses **Resend** (`resend` PyPI package). Degrades gracefully if `RESEND_API_KEY` is unset (logs a warning, never raises).
+
+| Function | When called | Type |
+|----------|-------------|------|
+| `send_welcome(to, name)` | `auth.register()` success | fire-and-forget (thread) |
+| `send_payment_approved(to, name, plan, expires_at)` | `payments.approve_payment()` success | fire-and-forget (thread) |
+| `send_password_reset(to, name, reset_link)` | `POST /api/auth/forgot-password` | synchronous |
+| `send_renewal_reminder(to, name, days_left, expires_date)` | `dispatch_renewal_reminders()` | synchronous |
+| `send_expired_notice(to, name)` | `dispatch_renewal_reminders()` | synchronous |
+| `dispatch_renewal_reminders()` | cron endpoint or admin manual trigger | synchronous, returns summary dict |
+
+**Renewal reminder logic**: `dispatch_renewal_reminders()` queries `payments` for `status='success'` records where `expires_at::date` equals `today+5`, `today+1`, or `today` (exactly, not a range) — so each reminder fires exactly once per payment cycle. Called daily by pg_cron at 9:00 AM UTC.
+
+**Password reset flow**: `POST /api/auth/forgot-password` calls `supabase.auth.admin.generate_link({type: "recovery", email, options: {redirect_to: APP_URL+"/reset-password"}})` to get `properties.action_link`, then sends it via Resend. Always returns 200 to avoid revealing whether email exists.
+
+---
+
+## pg_cron Jobs (Supabase)
+
+Three scheduled jobs configured in Supabase via `pg_cron` + `pg_net`:
+
+| Job name | Schedule (UTC) | What it does |
+|----------|---------------|--------------|
+| `expire-subscriptions-daily` | 3:00 AM | Marks expired active subscriptions |
+| `daily-analytics-snapshot` | 3:30 AM | Generates today's analytics snapshot |
+| `daily-renewal-reminders` | 9:00 AM | Calls `POST /api/admin/emails/renewal-reminders/cron` |
+
+The `daily-renewal-reminders` job reads `backend_url` and `service_role_key` from the `app_secrets` table at runtime and POSTs to the cron endpoint with `Authorization: Bearer <service_role_key>`. To activate after deploying the backend:
+```sql
+UPDATE app_secrets SET value = 'https://tu-backend.com' WHERE key = 'backend_url';
+UPDATE app_secrets SET value = '<service_role_key>' WHERE key = 'service_role_key';
+```
 
 ---
 
@@ -519,6 +585,24 @@ Still the primary CRUD path used by the frontend admin classroom UI.
 
 Reads Supabase views `v_stats_members`, `v_stats_revenue`, `v_analytics_history`. Results are cached in Redis with short TTLs (30–300s) to amortize parallel admin-panel requests.
 
+### Raffles — admin (`/api/admin/raffles`, 👑)
+| Method | Path | Body | Returns |
+|--------|------|------|---------|
+| GET | `/api/admin/raffles/` | — | `[RaffleOut]` with winners, newest first |
+| POST | `/api/admin/raffles/` | `{title, winner_count: 1–20}` | `RaffleOut` (201) — selects random winners from active miembros |
+| DELETE | `/api/admin/raffles/{raffle_id}` | — | `{deleted: true}` (cascades to raffle_winners) |
+
+Winner eligibility: `subscription_status='active'` AND `role='miembro'`. Returns 400 if active members < winner_count.
+
+### Email (`/api/auth`, `/api/admin/emails`)
+| Method | Path | Auth | Body | Returns |
+|--------|------|------|------|---------|
+| POST | `/api/auth/forgot-password` | — | `{email}` | `{message}` (always 200) |
+| POST | `/api/admin/emails/renewal-reminders` | 👑 | — | `{sent_5_days, sent_1_day, sent_expired, errors}` |
+| POST | `/api/admin/emails/renewal-reminders/cron` | service_role_key | — | Same as above — for pg_cron |
+
+The cron endpoint uses `Authorization: Bearer <SUPABASE_SERVICE_ROLE_KEY>` (validated by `_require_service_role` dependency), not a user JWT.
+
 ### Health
 | Method | Path | Auth | Returns |
 |--------|------|------|---------|
@@ -541,6 +625,9 @@ Reads Supabase views `v_stats_members`, `v_stats_revenue`, `v_analytics_history`
 - **Live activation is exclusive**: activating one live session deactivates any other currently-active session.
 - **Achievement idempotency**: non-repeatable achievements silently skip if already earned; repeatable ones respect `daily_limit`.
 - **Frozen exchange rate**: `payments.exchange_rate` and `amount_local` are snapshots taken at registration time — never recalculate retroactively even if the BCV rate changes later.
+- **Emails are fire-and-forget**: `send_welcome` and `send_payment_approved` run in daemon threads — a failed email never rolls back the main operation. `dispatch_renewal_reminders` is synchronous since it's called from a dedicated endpoint.
+- **Renewal reminders fire once per cycle**: queries use exact date equality (`expires_at::date = today+N`) not ranges, so each reminder sends exactly once. Running the cron more than once per day on the same date is safe.
+- **Raffle eligibility is point-in-time**: winner selection queries active members at creation time — no caching. Minimum 2 prizes required on the frontend roulette; minimum 1 winner and enough eligible members required on the backend raffle.
 
 ---
 
